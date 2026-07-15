@@ -115,7 +115,7 @@
   .manual-row { display: flex; gap: 8px; margin-top: 12px; }
   .manual-row input { flex: 1; }
 
-  input[type="text"], input[type="number"], input[type="tel"], input[type="search"] {
+  input[type="text"], input[type="number"], input[type="tel"], input[type="search"], input[type="password"] {
     width: 100%;
     padding: 15px 14px;
     font-size: 17px;
@@ -177,6 +177,7 @@
   }
   .card h2 { font-size: 17px; font-weight: 800; margin-bottom: 4px; }
   .card .sub { font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .card p.info { font-size: 15px; color: var(--muted); line-height: 1.5; margin-top: 8px; }
 
   .list-item {
     background: var(--card);
@@ -227,6 +228,14 @@
   }
   .toast.show { opacity: 1; }
   .hidden { display: none !important; }
+  .sync-dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-right: 5px;
+  }
+  .sync-dot.off { background: var(--muted); }
 
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; }
@@ -265,8 +274,17 @@
         <div class="pbarcode" id="foundBarcode"></div>
         <div class="pprice" id="foundPrice"></div>
       </div>
-      <button class="btn btn-ghost mt" id="editFoundBtn">Fiyatı / Adı Düzenle</button>
+      <button class="btn btn-ghost mt hidden" id="editFoundBtn">Fiyatı / Adı Düzenle</button>
       <button class="btn btn-primary mt" id="scanAgainBtn1">Yeni Barkod Okut</button>
+    </div>
+
+    <div id="notFoundView" class="hidden mt-lg">
+      <div class="card">
+        <h2>Ürün kayıtlı değil</h2>
+        <div class="sub" id="nfBarcode"></div>
+        <p class="info">Bu barkod listede yok. Fiyatı patron ekleyince burada görünecek.</p>
+      </div>
+      <button class="btn btn-primary mt" id="scanAgainBtn2">Yeni Barkod Okut</button>
     </div>
 
     <div id="newView" class="hidden mt-lg">
@@ -300,10 +318,25 @@
   <section id="tab-list" class="hidden">
     <input type="search" id="searchInput" placeholder="Ürün adı veya barkod ara...">
     <div id="productList"></div>
-    <div style="display:flex; gap:8px; margin-top:20px;">
+
+    <button class="btn btn-ghost mt-lg" id="refreshBtn" style="font-size:14px; padding:12px;">🔄 Listeyi Güncelle</button>
+
+    <div style="display:flex; gap:8px; margin-top:8px;">
       <button class="btn btn-ghost" id="exportBtn" style="font-size:14px; padding:12px;">⬇ Yedek Al</button>
-      <button class="btn btn-ghost" id="importBtn" style="font-size:14px; padding:12px;">⬆ Yedek Yükle</button>
+      <button class="btn btn-ghost hidden" id="importBtn" style="font-size:14px; padding:12px;">⬆ Yedek Yükle</button>
       <input type="file" id="importInput" accept=".json,application/json" class="hidden">
+    </div>
+
+    <div class="card mt-lg">
+      <h2 id="adminTitle"><span class="sync-dot off" id="syncDot"></span>Eleman modu</h2>
+      <p class="info" id="adminInfo">Fiyatları sadece görebilirsin. Patron girişi yapılırsa ürün ekleme ve fiyat değiştirme açılır.</p>
+      <button class="btn btn-ghost mt" id="adminToggleBtn" style="font-size:14px; padding:12px;">🔑 Patron Girişi</button>
+      <div id="tokenRow" class="hidden">
+        <label for="tokenInput">GitHub Token</label>
+        <input type="password" id="tokenInput" placeholder="ghp_ ile başlayan anahtarı yapıştır" autocomplete="off">
+        <button class="btn btn-primary mt" id="tokenSaveBtn" style="font-size:15px; padding:12px;">Girişi Tamamla</button>
+      </div>
+      <button class="btn btn-danger-line hidden" id="logoutBtn">Patron çıkışı yap</button>
     </div>
   </section>
 </main>
@@ -317,55 +350,143 @@
 
 <script>
 (function () {
-  var STORAGE_KEY = 'barkod-fiyat-urunler';
+  // ---------- Ayarlar ----------
+  var GH_OWNER = '2n86njp68z-sketch';
+  var GH_REPO = 'barkodfiyat';
+  var GH_FILE = 'data.json';
+  var GH_BRANCH = 'main';
+  var API_URL = 'https://api.github.com/repos/' + GH_OWNER + '/' + GH_REPO + '/contents/' + GH_FILE;
+
+  var CACHE_KEY = 'barkod-fiyat-cache';
+  var TOKEN_KEY = 'barkod-fiyat-token';
+
   var products = {};
+  var fileSha = null;
   var scanner = null;
   var scanning = false;
   var currentBarcode = null;
   var lastMethod = 'photo';
+  var saving = false;
 
   var $ = function (id) { return document.getElementById(id); };
 
-  var hasClaudeStorage = typeof window.storage !== 'undefined' && window.storage && typeof window.storage.get === 'function';
+  function getToken() {
+    try { return localStorage.getItem(TOKEN_KEY) || ''; } catch (e) { return ''; }
+  }
+  function isAdmin() { return !!getToken(); }
 
-  async function loadProducts() {
-    if (hasClaudeStorage) {
-      try {
-        var result = await window.storage.get(STORAGE_KEY);
-        if (result && result.value) products = JSON.parse(result.value);
-      } catch (e) {
-        products = {};
-      }
-    } else {
-      try {
-        var raw = localStorage.getItem(STORAGE_KEY);
-        if (raw) products = JSON.parse(raw);
-      } catch (e) {
-        products = {};
-      }
+  // ---------- UTF-8 güvenli base64 ----------
+  function b64encode(str) {
+    return btoa(unescape(encodeURIComponent(str)));
+  }
+  function b64decode(b64) {
+    return decodeURIComponent(escape(atob(b64.replace(/\n/g, ''))));
+  }
+
+  // ---------- Bulut (GitHub) ----------
+  async function fetchFromCloud() {
+    var headers = { 'Accept': 'application/vnd.github+json' };
+    var token = getToken();
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    var res = await fetch(API_URL + '?ref=' + GH_BRANCH + '&t=' + Date.now(), { headers: headers });
+    if (res.status === 404) {
+      fileSha = null;
+      return {};
     }
-    updateCount();
-    renderList();
+    if (!res.ok) throw new Error('http ' + res.status);
+    var data = await res.json();
+    fileSha = data.sha;
+    var text = b64decode(data.content || '');
+    if (!text.trim()) return {};
+    return JSON.parse(text);
+  }
+
+  async function pushToCloud() {
+    var token = getToken();
+    if (!token) return false;
+    var body = {
+      message: 'Fiyat listesi guncellendi',
+      content: b64encode(JSON.stringify(products, null, 2)),
+      branch: GH_BRANCH
+    };
+    if (fileSha) body.sha = fileSha;
+    var res = await fetch(API_URL, {
+      method: 'PUT',
+      headers: {
+        'Accept': 'application/vnd.github+json',
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+    if (res.status === 409 || res.status === 422) {
+      try {
+        var check = await fetch(API_URL + '?ref=' + GH_BRANCH + '&t=' + Date.now(), {
+          headers: { 'Accept': 'application/vnd.github+json', 'Authorization': 'Bearer ' + token }
+        });
+        if (check.ok) {
+          var info = await check.json();
+          body.sha = info.sha;
+          res = await fetch(API_URL, {
+            method: 'PUT',
+            headers: {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': 'Bearer ' + token,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(body)
+          });
+        }
+      } catch (e) {}
+    }
+    if (!res.ok) throw new Error('push ' + res.status);
+    var out = await res.json();
+    if (out && out.content && out.content.sha) fileSha = out.content.sha;
+    return true;
+  }
+
+  function saveCache() {
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify(products)); } catch (e) {}
+  }
+  function loadCache() {
+    try {
+      var raw = localStorage.getItem(CACHE_KEY);
+      if (raw) products = JSON.parse(raw);
+    } catch (e) { products = {}; }
+  }
+
+  async function refreshFromCloud(silent) {
+    try {
+      var cloud = await fetchFromCloud();
+      products = cloud;
+      saveCache();
+      updateCount();
+      renderList($('searchInput').value);
+      if (!silent) showToast('Liste güncellendi ✓');
+      return true;
+    } catch (e) {
+      if (!silent) showToast('İnternet yok, kayıtlı liste gösteriliyor');
+      return false;
+    }
   }
 
   async function saveProducts() {
-    if (hasClaudeStorage) {
-      try {
-        var result = await window.storage.set(STORAGE_KEY, JSON.stringify(products));
-        if (!result) showToast('Kaydetme hatası, tekrar dene');
-      } catch (e) {
-        showToast('Kaydetme hatası, tekrar dene');
-      }
-    } else {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(products));
-      } catch (e) {
-        showToast('Kaydetme hatası, tekrar dene');
-      }
-    }
+    saveCache();
     updateCount();
+    if (!isAdmin()) return;
+    if (saving) return;
+    saving = true;
+    showToast('Buluta kaydediliyor...');
+    try {
+      await pushToCloud();
+      showToast('Buluta kaydedildi ✓');
+    } catch (e) {
+      showToast('Bulut hatası! İnterneti kontrol et');
+    }
+    saving = false;
   }
 
+  // ---------- Yardımcılar ----------
   function formatPrice(p) {
     var n = Number(p);
     if (isNaN(n)) return '—';
@@ -403,10 +524,26 @@
 
   function hideResults() {
     $('foundView').classList.add('hidden');
+    $('notFoundView').classList.add('hidden');
     $('newView').classList.add('hidden');
     $('editView').classList.add('hidden');
   }
 
+  function applyMode() {
+    var admin = isAdmin();
+    $('editFoundBtn').classList.toggle('hidden', !admin);
+    $('importBtn').classList.toggle('hidden', !admin);
+    $('logoutBtn').classList.toggle('hidden', !admin);
+    $('adminToggleBtn').classList.toggle('hidden', admin);
+    $('tokenRow').classList.add('hidden');
+    $('syncDot').classList.toggle('off', !admin);
+    $('adminTitle').childNodes[1].textContent = admin ? 'Patron modu' : 'Eleman modu';
+    $('adminInfo').textContent = admin
+      ? 'Ürün ekleyip fiyat değiştirebilirsin. Değişiklikler otomatik buluta yazılır, elemanların telefonunda güncellenir.'
+      : 'Fiyatları sadece görebilirsin. Patron girişi yapılırsa ürün ekleme ve fiyat değiştirme açılır.';
+  }
+
+  // ---------- Barkod işleme ----------
   function handleBarcode(code) {
     code = String(code).trim();
     if (!code) return;
@@ -419,15 +556,19 @@
       $('foundBarcode').textContent = code;
       $('foundPrice').innerHTML = formatPrice(p.fiyat) + ' <small>₺</small>';
       $('foundView').classList.remove('hidden');
-    } else {
+    } else if (isAdmin()) {
       $('newBarcode').textContent = 'Barkod: ' + code;
       $('newName').value = '';
       $('newPrice').value = '';
       $('newView').classList.remove('hidden');
       setTimeout(function () { $('newName').focus(); }, 100);
+    } else {
+      $('nfBarcode').textContent = 'Barkod: ' + code;
+      $('notFoundView').classList.remove('hidden');
     }
   }
 
+  // ---------- Kamera ----------
   async function startScanner() {
     if (scanning) return;
     $('scanIdle').classList.add('hidden');
@@ -483,6 +624,7 @@
     $('scanIdle').classList.remove('hidden');
   }
 
+  // ---------- Liste ----------
   function renderList(filter) {
     var container = $('productList');
     var codes = Object.keys(products);
@@ -522,6 +664,7 @@
     });
   }
 
+  // ---------- Sekmeler ----------
   function switchTab(tab) {
     var scanTab = tab === 'scan';
     $('tab-scan').classList.toggle('hidden', !scanTab);
@@ -534,6 +677,7 @@
     }
   }
 
+  // ---------- Fotoğrafla okutma ----------
   function fileToImage(file) {
     return new Promise(function (resolve, reject) {
       var img = new Image();
@@ -626,6 +770,7 @@
     }
   }
 
+  // ---------- Olaylar ----------
   $('photoBtn').addEventListener('click', function () {
     $('photoInput').click();
   });
@@ -649,9 +794,8 @@
     if (!ad) { showToast('Ürün adı gir'); return; }
     if (isNaN(fiyat) || fiyat < 0) { showToast('Geçerli bir fiyat gir'); return; }
     products[currentBarcode] = { ad: ad, fiyat: fiyat };
-    await saveProducts();
-    showToast('Ürün kaydedildi ✓');
     handleBarcode(currentBarcode);
+    await saveProducts();
   });
 
   $('cancelNewBtn').addEventListener('click', function () {
@@ -674,9 +818,8 @@
     if (!ad) { showToast('Ürün adı gir'); return; }
     if (isNaN(fiyat) || fiyat < 0) { showToast('Geçerli bir fiyat gir'); return; }
     products[currentBarcode] = { ad: ad, fiyat: fiyat };
-    await saveProducts();
-    showToast('Güncellendi ✓');
     handleBarcode(currentBarcode);
+    await saveProducts();
   });
 
   var deleteArmed = false;
@@ -694,10 +837,10 @@
     deleteArmed = false;
     this.textContent = 'Ürünü Sil';
     delete products[currentBarcode];
-    await saveProducts();
-    showToast('Ürün silindi');
     hideResults();
     renderList($('searchInput').value);
+    showToast('Ürün silindi');
+    await saveProducts();
   });
 
   $('cancelEditBtn').addEventListener('click', function () {
@@ -713,11 +856,51 @@
       $('photoInput').click();
     }
   });
+  $('scanAgainBtn2').addEventListener('click', function () {
+    hideResults();
+    if (lastMethod === 'camera') {
+      startScanner();
+    } else {
+      $('photoInput').click();
+    }
+  });
 
   $('navScan').addEventListener('click', function () { switchTab('scan'); });
   $('navList').addEventListener('click', function () { switchTab('list'); });
   $('searchInput').addEventListener('input', function () { renderList(this.value); });
 
+  $('refreshBtn').addEventListener('click', function () { refreshFromCloud(false); });
+
+  // ---------- Patron girişi ----------
+  $('adminToggleBtn').addEventListener('click', function () {
+    $('tokenRow').classList.toggle('hidden');
+  });
+
+  $('tokenSaveBtn').addEventListener('click', async function () {
+    var t = $('tokenInput').value.trim();
+    if (!t) { showToast('Token yapıştır'); return; }
+    try { localStorage.setItem(TOKEN_KEY, t); } catch (e) {}
+    $('tokenInput').value = '';
+    showToast('Kontrol ediliyor...');
+    try {
+      await fetchFromCloud();
+      applyMode();
+      showToast('Patron girişi tamam ✓');
+    } catch (e) {
+      try { localStorage.removeItem(TOKEN_KEY); } catch (e2) {}
+      applyMode();
+      showToast('Token geçersiz görünüyor');
+    }
+  });
+
+  $('logoutBtn').addEventListener('click', function () {
+    try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
+    applyMode();
+    hideResults();
+    showToast('Eleman moduna geçildi');
+  });
+
+  // ---------- Yedekleme ----------
   $('exportBtn').addEventListener('click', function () {
     var codes = Object.keys(products);
     if (codes.length === 0) { showToast('Yedeklenecek ürün yok'); return; }
@@ -751,9 +934,9 @@
           }
         }
         if (added === 0) throw new Error('empty');
-        await saveProducts();
         renderList($('searchInput').value);
         showToast(added + ' ürün yüklendi ✓');
+        await saveProducts();
       } catch (e) {
         showToast('Yedek dosyası okunamadı');
       }
@@ -762,7 +945,19 @@
     this.value = '';
   });
 
-  loadProducts();
+  // Uygulama öne gelince listeyi tazele (elemanlar güncel fiyatı görsün)
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') {
+      refreshFromCloud(true);
+    }
+  });
+
+  // ---------- Başlangıç ----------
+  loadCache();
+  updateCount();
+  renderList();
+  applyMode();
+  refreshFromCloud(true);
 })();
 </script>
 </body>
