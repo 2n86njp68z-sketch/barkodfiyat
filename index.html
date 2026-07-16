@@ -84,6 +84,8 @@
   }
   #reader { width: 100%; }
   #reader video { border-radius: 16px; }
+  #readerKasa { width: 100%; }
+  #readerKasa video { border-radius: 16px; }
   .scan-idle {
     color: #d6d3d1;
     text-align: center;
@@ -237,6 +239,70 @@
   }
   .sync-dot.off { background: var(--muted); }
 
+  .cart-item {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 12px 14px;
+    margin-top: 10px;
+  }
+  .cart-item .ci-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .cart-item .ci-name { font-size: 15px; font-weight: 700; word-break: break-word; }
+  .cart-item .ci-unit { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .cart-item .ci-bottom {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 10px;
+  }
+  .qty-box { display: flex; align-items: center; gap: 0; }
+  .qty-btn {
+    width: 44px; height: 40px;
+    border: 2px solid var(--line);
+    background: var(--card);
+    font-size: 22px;
+    font-weight: 800;
+    color: var(--accent);
+    cursor: pointer;
+  }
+  .qty-btn:active { background: var(--paper); }
+  .qty-btn.minus { border-radius: 10px 0 0 10px; }
+  .qty-btn.plus { border-radius: 0 10px 10px 0; }
+  .qty-num {
+    min-width: 44px; height: 40px;
+    border-top: 2px solid var(--line);
+    border-bottom: 2px solid var(--line);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 17px; font-weight: 900;
+    font-variant-numeric: tabular-nums;
+  }
+  .ci-line-total {
+    font-size: 17px;
+    font-weight: 900;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .search-hit {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin-top: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    font-size: 15px;
+    font-weight: 700;
+  }
+  .search-hit .sh-price { color: var(--muted); font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; }
     .btn:active { transform: none; }
@@ -315,6 +381,37 @@
     </div>
   </section>
 
+  <section id="tab-kasa" class="hidden">
+    <div class="scan-box">
+      <div class="scan-idle" id="kasaIdle">
+        <p>Ürünleri okut, sepete eklensin.<br>Kamera açık kalır, arka arkaya okutabilirsin.</p>
+        <button class="btn btn-primary" id="kasaPhotoBtn" style="width:auto; padding:14px 28px;">📸 Fotoğrafla Ekle</button>
+        <button class="btn btn-ghost" id="kasaStartBtn" style="width:auto; padding:12px 24px; margin-top:10px; color:#d6d3d1; border-color:#57534e;">📷 Canlı Kamera</button>
+      </div>
+      <div id="readerKasa" class="hidden"></div>
+    </div>
+    <button class="btn btn-stop mt hidden" id="kasaStopBtn">Kamerayı Durdur</button>
+
+    <div class="manual-row">
+      <input type="tel" id="kasaManualBarcode" placeholder="Barkodu elle yaz...">
+      <button class="btn btn-ghost" id="kasaManualBtn" style="width:auto; padding:0 18px;">Ekle</button>
+    </div>
+
+    <div class="manual-row" style="margin-top:8px;">
+      <input type="search" id="kasaNameSearch" placeholder="Ya da ürün adıyla ara...">
+    </div>
+    <div id="kasaSearchResults"></div>
+
+    <div id="cartList" class="mt-lg"></div>
+
+    <div class="price-tag mt-lg hidden" id="totalTag">
+      <div class="pname">TOPLAM <span id="totalCount"></span></div>
+      <div class="pprice" id="totalPrice"></div>
+    </div>
+
+    <button class="btn btn-danger-line mt hidden" id="clearCartBtn">🧹 Kasayı Temizle</button>
+  </section>
+
   <section id="tab-list" class="hidden">
     <input type="search" id="searchInput" placeholder="Ürün adı veya barkod ara...">
     <div id="productList"></div>
@@ -343,6 +440,7 @@
 
 <nav>
   <button id="navScan" class="active"><span>Tara</span></button>
+  <button id="navKasa"><span>Kasa</span></button>
   <button id="navList"><span>Ürünler</span></button>
 </nav>
 
@@ -359,14 +457,31 @@
 
   var CACHE_KEY = 'barkod-fiyat-cache';
   var TOKEN_KEY = 'barkod-fiyat-token';
+  var CART_KEY = 'barkod-fiyat-kasa';
+  var DIRTY_KEY = 'barkod-fiyat-bekleyen';
 
   var products = {};
+  var cart = {};
   var fileSha = null;
   var scanner = null;
   var scanning = false;
+  var scanTarget = 'lookup';
+  var lastKasaCode = '';
+  var lastKasaTime = 0;
   var currentBarcode = null;
   var lastMethod = 'photo';
   var saving = false;
+  var pendingSave = false;
+
+  function isDirty() {
+    try { return localStorage.getItem(DIRTY_KEY) === '1'; } catch (e) { return false; }
+  }
+  function setDirty(v) {
+    try {
+      if (v) localStorage.setItem(DIRTY_KEY, '1');
+      else localStorage.removeItem(DIRTY_KEY);
+    } catch (e) {}
+  }
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -420,13 +535,22 @@
       body: JSON.stringify(body)
     });
     if (res.status === 409 || res.status === 422) {
+      // Cakisma: biri az once yazmis. Guncel bulutu cek, kendi listemizle BIRLESTIR, oyle yaz.
       try {
         var check = await fetch(API_URL + '?ref=' + GH_BRANCH + '&t=' + Date.now(), {
           headers: { 'Accept': 'application/vnd.github+json', 'Authorization': 'Bearer ' + token }
         });
         if (check.ok) {
           var info = await check.json();
+          try {
+            var cloudNow = JSON.parse(b64decode(info.content || '') || '{}');
+            for (var k in cloudNow) {
+              if (!(k in products)) products[k] = cloudNow[k];
+            }
+            saveCache();
+          } catch (e2) {}
           body.sha = info.sha;
+          body.content = b64encode(JSON.stringify(products, null, 2));
           res = await fetch(API_URL, {
             method: 'PUT',
             headers: {
@@ -454,14 +578,36 @@
       if (raw) products = JSON.parse(raw);
     } catch (e) { products = {}; }
   }
+  function saveCart() {
+    try { localStorage.setItem(CART_KEY, JSON.stringify(cart)); } catch (e) {}
+  }
+  function loadCart() {
+    try {
+      var raw = localStorage.getItem(CART_KEY);
+      if (raw) cart = JSON.parse(raw);
+    } catch (e) { cart = {}; }
+  }
 
   async function refreshFromCloud(silent) {
+    // Buluta gidememis bekleyen degisiklik varsa once onu gonder;
+    // bulutu cekip uzerine yazarsak o degisiklik kaybolur.
+    if (isAdmin() && isDirty()) {
+      try {
+        await pushToCloud();
+        setDirty(false);
+        showToast('Bekleyen değişiklik buluta yazıldı ✓');
+      } catch (e) {
+        if (!silent) showToast('Bekleyen değişiklik var, internet gelince yazılacak');
+        return false;
+      }
+    }
     try {
       var cloud = await fetchFromCloud();
       products = cloud;
       saveCache();
       updateCount();
       renderList($('searchInput').value);
+      renderCart();
       if (!silent) showToast('Liste güncellendi ✓');
       return true;
     } catch (e) {
@@ -474,16 +620,27 @@
     saveCache();
     updateCount();
     if (!isAdmin()) return;
-    if (saving) return;
+    setDirty(true);
+    if (saving) { pendingSave = true; return; }
     saving = true;
     showToast('Buluta kaydediliyor...');
-    try {
-      await pushToCloud();
-      showToast('Buluta kaydedildi ✓');
-    } catch (e) {
-      showToast('Bulut hatası! İnterneti kontrol et');
-    }
+    var ok = false;
+    do {
+      pendingSave = false;
+      try {
+        await pushToCloud();
+        ok = true;
+      } catch (e) {
+        ok = false;
+      }
+    } while (pendingSave);
     saving = false;
+    if (ok) {
+      setDirty(false);
+      showToast('Buluta kaydedildi ✓');
+    } else {
+      showToast('Bulut hatası! İnternet gelince otomatik denenecek');
+    }
   }
 
   // ---------- Yardımcılar ----------
@@ -569,13 +726,21 @@
   }
 
   // ---------- Kamera ----------
-  async function startScanner() {
-    if (scanning) return;
-    $('scanIdle').classList.add('hidden');
-    $('reader').classList.remove('hidden');
-    $('stopBtn').classList.remove('hidden');
+  function scanUi(target) {
+    return target === 'kasa'
+      ? { idle: 'kasaIdle', reader: 'readerKasa', stop: 'kasaStopBtn' }
+      : { idle: 'scanIdle', reader: 'reader', stop: 'stopBtn' };
+  }
 
-    scanner = new Html5Qrcode('reader');
+  async function startScanner(target) {
+    if (scanning) return;
+    scanTarget = target;
+    var u = scanUi(target);
+    $(u.idle).classList.add('hidden');
+    $(u.reader).classList.remove('hidden');
+    $(u.stop).classList.remove('hidden');
+
+    scanner = new Html5Qrcode(u.reader);
     var config = {
       fps: 10,
       qrbox: function (vw, vh) {
@@ -598,18 +763,27 @@
         { facingMode: 'environment' },
         config,
         function (decodedText) {
-          lastMethod = 'camera';
-          beep();
-          stopScanner();
-          handleBarcode(decodedText);
+          if (scanTarget === 'kasa') {
+            var now = Date.now();
+            if (decodedText === lastKasaCode && (now - lastKasaTime) < 2500) return;
+            lastKasaCode = decodedText;
+            lastKasaTime = now;
+            beep();
+            addToCart(decodedText);
+          } else {
+            lastMethod = 'camera';
+            beep();
+            stopScanner();
+            handleBarcode(decodedText);
+          }
         },
         function () {}
       );
       scanning = true;
     } catch (e) {
-      $('scanIdle').classList.remove('hidden');
-      $('reader').classList.add('hidden');
-      $('stopBtn').classList.add('hidden');
+      $(u.idle).classList.remove('hidden');
+      $(u.reader).classList.add('hidden');
+      $(u.stop).classList.add('hidden');
       showToast('Kamera açılamadı. İzin verdiğinden emin ol.');
     }
   }
@@ -619,9 +793,106 @@
       try { await scanner.stop(); scanner.clear(); } catch (e) {}
     }
     scanning = false;
-    $('reader').classList.add('hidden');
-    $('stopBtn').classList.add('hidden');
-    $('scanIdle').classList.remove('hidden');
+    var u = scanUi(scanTarget);
+    $(u.reader).classList.add('hidden');
+    $(u.stop).classList.add('hidden');
+    $(u.idle).classList.remove('hidden');
+  }
+
+  // ---------- Kasa ----------
+  function addToCart(code) {
+    code = String(code).trim();
+    if (!code) return;
+    if (!products[code]) {
+      showToast('Bu barkod listede kayıtlı değil');
+      return;
+    }
+    cart[code] = (cart[code] || 0) + 1;
+    saveCart();
+    renderCart();
+    showToast(products[code].ad + ' → ' + cart[code] + ' adet');
+  }
+
+  function changeQty(code, delta) {
+    if (!cart[code]) return;
+    cart[code] += delta;
+    if (cart[code] <= 0) delete cart[code];
+    saveCart();
+    renderCart();
+  }
+
+  function renderCart() {
+    var container = $('cartList');
+    var codes = Object.keys(cart).filter(function (c) { return products[c]; });
+
+    if (codes.length === 0) {
+      container.innerHTML = '<div class="empty">Kasa boş.<br>Barkod okut ya da ürün adıyla ara, sepete eklensin.</div>';
+      $('totalTag').classList.add('hidden');
+      $('clearCartBtn').classList.add('hidden');
+      return;
+    }
+
+    container.innerHTML = '';
+    var total = 0;
+    var count = 0;
+
+    codes.sort(function (a, b) { return products[a].ad.localeCompare(products[b].ad, 'tr'); });
+
+    codes.forEach(function (code) {
+      var p = products[code];
+      var qty = cart[code];
+      var line = Number(p.fiyat) * qty;
+      total += line;
+      count += qty;
+
+      var div = document.createElement('div');
+      div.className = 'cart-item';
+      div.innerHTML =
+        '<div class="ci-top"><div class="ci-name"></div><div class="ci-unit"></div></div>' +
+        '<div class="ci-bottom">' +
+          '<div class="qty-box">' +
+            '<button class="qty-btn minus">−</button>' +
+            '<div class="qty-num"></div>' +
+            '<button class="qty-btn plus">+</button>' +
+          '</div>' +
+          '<div class="ci-line-total"></div>' +
+        '</div>';
+      div.querySelector('.ci-name').textContent = p.ad;
+      div.querySelector('.ci-unit').textContent = formatPrice(p.fiyat) + ' ₺ / adet';
+      div.querySelector('.qty-num').textContent = qty;
+      div.querySelector('.ci-line-total').textContent = formatPrice(line) + ' ₺';
+      div.querySelector('.qty-btn.minus').addEventListener('click', function () { changeQty(code, -1); });
+      div.querySelector('.qty-btn.plus').addEventListener('click', function () { changeQty(code, 1); });
+      container.appendChild(div);
+    });
+
+    $('totalCount').textContent = '(' + count + ' ürün)';
+    $('totalPrice').innerHTML = formatPrice(total) + ' <small>₺</small>';
+    $('totalTag').classList.remove('hidden');
+    $('clearCartBtn').classList.remove('hidden');
+  }
+
+  function renderKasaSearch(q) {
+    var box = $('kasaSearchResults');
+    q = (q || '').trim().toLocaleLowerCase('tr');
+    if (!q) { box.innerHTML = ''; return; }
+    var hits = Object.keys(products).filter(function (code) {
+      return products[code].ad.toLocaleLowerCase('tr').indexOf(q) !== -1 || code.indexOf(q) !== -1;
+    }).slice(0, 6);
+    box.innerHTML = '';
+    hits.forEach(function (code) {
+      var d = document.createElement('div');
+      d.className = 'search-hit';
+      d.innerHTML = '<span class="sh-name"></span><span class="sh-price"></span>';
+      d.querySelector('.sh-name').textContent = products[code].ad;
+      d.querySelector('.sh-price').textContent = formatPrice(products[code].fiyat) + ' ₺';
+      d.addEventListener('click', function () {
+        addToCart(code);
+        $('kasaNameSearch').value = '';
+        box.innerHTML = '';
+      });
+      box.appendChild(d);
+    });
   }
 
   // ---------- Liste ----------
@@ -666,15 +937,15 @@
 
   // ---------- Sekmeler ----------
   function switchTab(tab) {
-    var scanTab = tab === 'scan';
-    $('tab-scan').classList.toggle('hidden', !scanTab);
-    $('tab-list').classList.toggle('hidden', scanTab);
-    $('navScan').classList.toggle('active', scanTab);
-    $('navList').classList.toggle('active', !scanTab);
-    if (!scanTab) {
-      stopScanner();
-      renderList($('searchInput').value);
-    }
+    stopScanner();
+    $('tab-scan').classList.toggle('hidden', tab !== 'scan');
+    $('tab-kasa').classList.toggle('hidden', tab !== 'kasa');
+    $('tab-list').classList.toggle('hidden', tab !== 'list');
+    $('navScan').classList.toggle('active', tab === 'scan');
+    $('navKasa').classList.toggle('active', tab === 'kasa');
+    $('navList').classList.toggle('active', tab === 'list');
+    if (tab === 'list') renderList($('searchInput').value);
+    if (tab === 'kasa') renderCart();
   }
 
   // ---------- Fotoğrafla okutma ----------
@@ -764,7 +1035,11 @@
     if (found) {
       lastMethod = 'photo';
       beep();
-      handleBarcode(found);
+      if (scanTarget === 'kasa') {
+        addToCart(found);
+      } else {
+        handleBarcode(found);
+      }
     } else {
       showToast('Okunamadı. Barkodu yatay, yakın ve net çek.');
     }
@@ -772,13 +1047,51 @@
 
   // ---------- Olaylar ----------
   $('photoBtn').addEventListener('click', function () {
+    scanTarget = 'lookup';
     $('photoInput').click();
   });
   $('photoInput').addEventListener('change', function () {
     scanPhoto(this.files[0]);
   });
-  $('startBtn').addEventListener('click', startScanner);
+  $('startBtn').addEventListener('click', function () { startScanner('lookup'); });
   $('stopBtn').addEventListener('click', stopScanner);
+
+  $('kasaPhotoBtn').addEventListener('click', function () {
+    scanTarget = 'kasa';
+    $('photoInput').click();
+  });
+  $('kasaStartBtn').addEventListener('click', function () { startScanner('kasa'); });
+  $('kasaStopBtn').addEventListener('click', stopScanner);
+
+  $('kasaManualBtn').addEventListener('click', function () {
+    addToCart($('kasaManualBarcode').value);
+    $('kasaManualBarcode').value = '';
+  });
+  $('kasaManualBarcode').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { addToCart(this.value); this.value = ''; }
+  });
+
+  $('kasaNameSearch').addEventListener('input', function () { renderKasaSearch(this.value); });
+
+  var clearArmed = false;
+  $('clearCartBtn').addEventListener('click', function () {
+    if (!clearArmed) {
+      clearArmed = true;
+      this.textContent = 'Emin misin? Temizlemek için tekrar dokun';
+      var btn = this;
+      setTimeout(function () {
+        clearArmed = false;
+        btn.textContent = '🧹 Kasayı Temizle';
+      }, 3000);
+      return;
+    }
+    clearArmed = false;
+    this.textContent = '🧹 Kasayı Temizle';
+    cart = {};
+    saveCart();
+    renderCart();
+    showToast('Kasa temizlendi');
+  });
 
   $('manualBtn').addEventListener('click', function () {
     handleBarcode($('manualBarcode').value);
@@ -850,22 +1163,25 @@
 
   $('scanAgainBtn1').addEventListener('click', function () {
     hideResults();
+    scanTarget = 'lookup';
     if (lastMethod === 'camera') {
-      startScanner();
+      startScanner('lookup');
     } else {
       $('photoInput').click();
     }
   });
   $('scanAgainBtn2').addEventListener('click', function () {
     hideResults();
+    scanTarget = 'lookup';
     if (lastMethod === 'camera') {
-      startScanner();
+      startScanner('lookup');
     } else {
       $('photoInput').click();
     }
   });
 
   $('navScan').addEventListener('click', function () { switchTab('scan'); });
+  $('navKasa').addEventListener('click', function () { switchTab('kasa'); });
   $('navList').addEventListener('click', function () { switchTab('list'); });
   $('searchInput').addEventListener('input', function () { renderList(this.value); });
 
@@ -945,7 +1261,6 @@
     this.value = '';
   });
 
-  // Uygulama öne gelince listeyi tazele (elemanlar güncel fiyatı görsün)
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'visible') {
       refreshFromCloud(true);
@@ -954,8 +1269,10 @@
 
   // ---------- Başlangıç ----------
   loadCache();
+  loadCart();
   updateCount();
   renderList();
+  renderCart();
   applyMode();
   refreshFromCloud(true);
 })();
