@@ -334,6 +334,8 @@
       <button class="btn btn-ghost" id="manualBtn" style="width:auto; padding:0 18px;">Ara</button>
     </div>
 
+    <button class="btn btn-ghost mt hidden" id="noBarBtn" style="font-size:15px; padding:13px;">➕ Barkodsuz Ürün Ekle</button>
+
     <div id="foundView" class="hidden mt-lg">
       <div class="price-tag">
         <div class="pname" id="foundName"></div>
@@ -643,6 +645,10 @@
     }
   }
 
+  function codeLabel(code) {
+    return String(code).indexOf('NOBAR-') === 0 ? 'Barkodsuz ürün' : code;
+  }
+
   // ---------- Yardımcılar ----------
   function formatPrice(p) {
     var n = Number(p);
@@ -689,6 +695,7 @@
   function applyMode() {
     var admin = isAdmin();
     $('editFoundBtn').classList.toggle('hidden', !admin);
+    $('noBarBtn').classList.toggle('hidden', !admin);
     $('importBtn').classList.toggle('hidden', !admin);
     $('logoutBtn').classList.toggle('hidden', !admin);
     $('adminToggleBtn').classList.toggle('hidden', admin);
@@ -710,7 +717,7 @@
     if (products[code]) {
       var p = products[code];
       $('foundName').textContent = p.ad;
-      $('foundBarcode').textContent = code;
+      $('foundBarcode').textContent = codeLabel(code);
       $('foundPrice').innerHTML = formatPrice(p.fiyat) + ' <small>₺</small>';
       $('foundView').classList.remove('hidden');
     } else if (isAdmin()) {
@@ -925,7 +932,7 @@
         '<div><div class="li-name"></div><div class="li-code"></div></div>' +
         '<div class="li-price"></div>';
       div.querySelector('.li-name').textContent = it.ad;
-      div.querySelector('.li-code').textContent = it.code;
+      div.querySelector('.li-code').textContent = codeLabel(it.code);
       div.querySelector('.li-price').textContent = formatPrice(it.fiyat) + ' ₺';
       div.addEventListener('click', function () {
         switchTab('scan');
@@ -1093,6 +1100,16 @@
     showToast('Kasa temizlendi');
   });
 
+  $('noBarBtn').addEventListener('click', function () {
+    currentBarcode = 'NOBAR-' + Date.now();
+    hideResults();
+    $('newBarcode').textContent = 'Barkodsuz ürün';
+    $('newName').value = '';
+    $('newPrice').value = '';
+    $('newView').classList.remove('hidden');
+    setTimeout(function () { $('newName').focus(); }, 100);
+  });
+
   $('manualBtn').addEventListener('click', function () {
     handleBarcode($('manualBarcode').value);
     $('manualBarcode').value = '';
@@ -1119,7 +1136,7 @@
     var p = products[currentBarcode];
     if (!p) return;
     hideResults();
-    $('editBarcode').textContent = 'Barkod: ' + currentBarcode;
+    $('editBarcode').textContent = codeLabel(currentBarcode) === currentBarcode ? 'Barkod: ' + currentBarcode : 'Barkodsuz ürün';
     $('editName').value = p.ad;
     $('editPrice').value = p.fiyat;
     $('editView').classList.remove('hidden');
