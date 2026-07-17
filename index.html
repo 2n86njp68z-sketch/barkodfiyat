@@ -84,8 +84,6 @@
   }
   #reader { width: 100%; }
   #reader video { border-radius: 16px; }
-  #readerKasa { width: 100%; }
-  #readerKasa video { border-radius: 16px; }
   .scan-idle {
     color: #d6d3d1;
     text-align: center;
@@ -376,6 +374,13 @@
         <input type="text" id="editName">
         <label for="editPrice">Fiyat (₺)</label>
         <input type="text" inputmode="decimal" id="editPrice">
+
+        <label>Barkod</label>
+        <div class="manual-row" style="margin-top:0;">
+          <input type="tel" id="editBarcodeInput" placeholder="Barkod yok">
+          <button class="btn btn-ghost" id="editScanBtn" style="width:auto; padding:0 16px; font-size:14px;">📷 Okut</button>
+        </div>
+
         <button class="btn btn-primary mt-lg" id="saveEditBtn">Güncelle</button>
         <button class="btn btn-danger-line" id="deleteBtn">Ürünü Sil</button>
         <button class="btn btn-danger-line" id="cancelEditBtn" style="color: var(--muted);">Vazgeç</button>
@@ -467,7 +472,7 @@
   var fileSha = null;
   var scanner = null;
   var scanning = false;
-  var scanTarget = 'lookup';
+  var scanTarget = 'lookup'; // 'lookup' (Tara) | 'kasa'
   var lastKasaCode = '';
   var lastKasaTime = 0;
   var currentBarcode = null;
@@ -591,8 +596,8 @@
   }
 
   async function refreshFromCloud(silent) {
-    // Buluta gidememis bekleyen degisiklik varsa once onu gonder;
-    // bulutu cekip uzerine yazarsak o degisiklik kaybolur.
+    // Buluta gidememis bekleyen degisiklik varsa, once onu gondermeyi dene.
+    // Bulutu cekip uzerine yazarsak o degisiklik kaybolur.
     if (isAdmin() && isDirty()) {
       try {
         await pushToCloud();
@@ -771,12 +776,20 @@
         config,
         function (decodedText) {
           if (scanTarget === 'kasa') {
+            // Kasa modu: kamera açık kalır, aynı ürün 2.5 sn içinde tekrar sayılmaz
             var now = Date.now();
             if (decodedText === lastKasaCode && (now - lastKasaTime) < 2500) return;
             lastKasaCode = decodedText;
             lastKasaTime = now;
             beep();
             addToCart(decodedText);
+          } else if (scanTarget === 'edit') {
+            lastMethod = 'camera';
+            beep();
+            stopScanner();
+            $('editBarcodeInput').value = decodedText;
+            $('editView').classList.remove('hidden');
+            showToast('Barkod okundu, Güncelle ile kaydet');
           } else {
             lastMethod = 'camera';
             beep();
@@ -1063,6 +1076,7 @@
   $('startBtn').addEventListener('click', function () { startScanner('lookup'); });
   $('stopBtn').addEventListener('click', stopScanner);
 
+  // Kasa olayları
   $('kasaPhotoBtn').addEventListener('click', function () {
     scanTarget = 'kasa';
     $('photoInput').click();
@@ -1139,7 +1153,14 @@
     $('editBarcode').textContent = codeLabel(currentBarcode) === currentBarcode ? 'Barkod: ' + currentBarcode : 'Barkodsuz ürün';
     $('editName').value = p.ad;
     $('editPrice').value = p.fiyat;
+    $('editBarcodeInput').value = String(currentBarcode).indexOf('NOBAR-') === 0 ? '' : currentBarcode;
     $('editView').classList.remove('hidden');
+  });
+
+  $('editScanBtn').addEventListener('click', function () {
+    scanTarget = 'edit';
+    $('editView').classList.add('hidden');
+    startScanner('lookup');
   });
 
   $('saveEditBtn').addEventListener('click', async function () {
@@ -1147,6 +1168,23 @@
     var fiyat = parseFloat(String($('editPrice').value).replace(',', '.'));
     if (!ad) { showToast('Ürün adı gir'); return; }
     if (isNaN(fiyat) || fiyat < 0) { showToast('Geçerli bir fiyat gir'); return; }
+
+    var yeniBarkod = $('editBarcodeInput').value.trim();
+    // Barkod bos ise barkodsuz kalsin (mevcut NOBAR anahtarini koru, yoksa yeni NOBAR uret)
+    if (!yeniBarkod) {
+      yeniBarkod = String(currentBarcode).indexOf('NOBAR-') === 0 ? currentBarcode : ('NOBAR-' + Date.now());
+    }
+
+    // Barkod degistiyse: yeni anahtar baska bir urunde kullaniliyorsa engelle
+    if (yeniBarkod !== currentBarcode && products[yeniBarkod]) {
+      showToast('Bu barkod başka üründe kayıtlı');
+      return;
+    }
+
+    if (yeniBarkod !== currentBarcode) {
+      delete products[currentBarcode]; // eski anahtari kaldir
+      currentBarcode = yeniBarkod;     // yeni anahtara tasi
+    }
     products[currentBarcode] = { ad: ad, fiyat: fiyat };
     handleBarcode(currentBarcode);
     await saveProducts();
@@ -1278,6 +1316,7 @@
     this.value = '';
   });
 
+  // Uygulama öne gelince listeyi tazele (elemanlar güncel fiyatı görsün)
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'visible') {
       refreshFromCloud(true);
