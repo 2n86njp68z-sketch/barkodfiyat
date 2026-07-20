@@ -64,7 +64,7 @@
     padding: 14px 0 12px;
     background: none;
     border: none;
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 700;
     color: var(--muted);
     cursor: pointer;
@@ -443,12 +443,22 @@
       <button class="btn btn-danger-line hidden" id="logoutBtn">Patron çıkışı yap</button>
     </div>
   </section>
+
+  <section id="tab-liste" class="hidden">
+    <div class="card">
+      <h2>Liste Fiyatları</h2>
+      <p class="info">Tedarikçi liste fiyatları (KDV hariç). Buradan bakıp mağaza satış fiyatını "Ürünler" kısmında belirlersin. Bu bölüm sadece referanstır, kasada kullanılmaz.</p>
+    </div>
+    <input type="search" id="listeSearch" placeholder="Ürün adı ara..." style="margin-top:12px;">
+    <div id="listeList"></div>
+  </section>
 </main>
 
 <nav>
   <button id="navScan" class="active"><span>Tara</span></button>
   <button id="navKasa"><span>Kasa</span></button>
   <button id="navList"><span>Ürünler</span></button>
+  <button id="navListe"><span>Liste</span></button>
 </nav>
 
 <div class="toast" id="toast"></div>
@@ -461,6 +471,8 @@
   var GH_FILE = 'data.json';
   var GH_BRANCH = 'main';
   var API_URL = 'https://api.github.com/repos/' + GH_OWNER + '/' + GH_REPO + '/contents/' + GH_FILE;
+  var LISTE_URL = 'https://raw.githubusercontent.com/' + GH_OWNER + '/' + GH_REPO + '/' + GH_BRANCH + '/liste.json';
+  var LISTE_CACHE = 'barkod-fiyat-liste-cache';
 
   var CACHE_KEY = 'barkod-fiyat-cache';
   var TOKEN_KEY = 'barkod-fiyat-token';
@@ -648,6 +660,13 @@
     } else {
       showToast('Bulut hatası! İnternet gelince otomatik denenecek');
     }
+  }
+
+  function norm(s) {
+    // Turkce arama: I/İ/ı/i ve buyuk-kucuk farkini yok say
+    return String(s)
+      .replace(/İ/g, 'i').replace(/I/g, 'i').replace(/ı/g, 'i')
+      .toLowerCase();
   }
 
   function codeLabel(code) {
@@ -894,10 +913,10 @@
 
   function renderKasaSearch(q) {
     var box = $('kasaSearchResults');
-    q = (q || '').trim().toLocaleLowerCase('tr');
+    q = norm((q || '').trim());
     if (!q) { box.innerHTML = ''; return; }
     var hits = Object.keys(products).filter(function (code) {
-      return products[code].ad.toLocaleLowerCase('tr').indexOf(q) !== -1 || code.indexOf(q) !== -1;
+      return norm(products[code].ad).indexOf(q) !== -1 || code.indexOf(q) !== -1;
     }).slice(0, 6);
     box.innerHTML = '';
     hits.forEach(function (code) {
@@ -915,17 +934,71 @@
     });
   }
 
+  // ---------- Liste Fiyatlari (referans) ----------
+  var listeFiyatlari = [];
+
+  async function loadListeFiyat() {
+    // once onbellek
+    try {
+      var raw = localStorage.getItem(LISTE_CACHE);
+      if (raw) { listeFiyatlari = JSON.parse(raw); renderListeFiyat(); }
+    } catch (e) {}
+    // sonra buluttan tazele
+    try {
+      var res = await fetch(LISTE_URL + '?t=' + Date.now());
+      if (res.ok) {
+        var data = await res.json();
+        if (Array.isArray(data)) {
+          listeFiyatlari = data;
+          try { localStorage.setItem(LISTE_CACHE, JSON.stringify(data)); } catch (e) {}
+          renderListeFiyat($('listeSearch').value);
+        }
+      }
+    } catch (e) {}
+  }
+
+  function renderListeFiyat(filter) {
+    var container = $('listeList');
+    if (!container) return;
+    filter = norm((filter || '').trim());
+
+    var items = listeFiyatlari.filter(function (it) {
+      if (!filter) return true;
+      return norm(it.ad).indexOf(filter) !== -1;
+    });
+
+    if (items.length === 0) {
+      container.innerHTML = '<div class="empty">' +
+        (listeFiyatlari.length === 0
+          ? 'Liste fiyatları yüklenmedi.<br>İnternet bağlantını kontrol et.'
+          : 'Aramana uyan ürün bulunamadı.') + '</div>';
+      return;
+    }
+
+    container.innerHTML = '';
+    items.forEach(function (it) {
+      var div = document.createElement('div');
+      div.className = 'list-item';
+      div.innerHTML =
+        '<div><div class="li-name"></div><div class="li-code">Liste fiyatı (KDV hariç)</div></div>' +
+        '<div class="li-price"></div>';
+      div.querySelector('.li-name').textContent = it.ad;
+      div.querySelector('.li-price').textContent = formatPrice(it.liste) + ' ₺';
+      container.appendChild(div);
+    });
+  }
+
   // ---------- Liste ----------
   function renderList(filter) {
     var container = $('productList');
     var codes = Object.keys(products);
-    filter = (filter || '').toLocaleLowerCase('tr');
+    filter = norm(filter || '');
 
     var items = codes.map(function (code) {
       return { code: code, ad: products[code].ad, fiyat: products[code].fiyat };
     }).filter(function (it) {
       if (!filter) return true;
-      return it.ad.toLocaleLowerCase('tr').indexOf(filter) !== -1 || it.code.indexOf(filter) !== -1;
+      return norm(it.ad).indexOf(filter) !== -1 || it.code.indexOf(filter) !== -1;
     }).sort(function (a, b) { return a.ad.localeCompare(b.ad, 'tr'); });
 
     if (items.length === 0) {
@@ -961,11 +1034,14 @@
     $('tab-scan').classList.toggle('hidden', tab !== 'scan');
     $('tab-kasa').classList.toggle('hidden', tab !== 'kasa');
     $('tab-list').classList.toggle('hidden', tab !== 'list');
+    $('tab-liste').classList.toggle('hidden', tab !== 'liste');
     $('navScan').classList.toggle('active', tab === 'scan');
     $('navKasa').classList.toggle('active', tab === 'kasa');
     $('navList').classList.toggle('active', tab === 'list');
+    $('navListe').classList.toggle('active', tab === 'liste');
     if (tab === 'list') renderList($('searchInput').value);
     if (tab === 'kasa') renderCart();
+    if (tab === 'liste') renderListeFiyat($('listeSearch').value);
   }
 
   // ---------- Fotoğrafla okutma ----------
@@ -1238,6 +1314,8 @@
   $('navScan').addEventListener('click', function () { switchTab('scan'); });
   $('navKasa').addEventListener('click', function () { switchTab('kasa'); });
   $('navList').addEventListener('click', function () { switchTab('list'); });
+  $('navListe').addEventListener('click', function () { switchTab('liste'); });
+  $('listeSearch').addEventListener('input', function () { renderListeFiyat(this.value); });
   $('searchInput').addEventListener('input', function () { renderList(this.value); });
 
   $('refreshBtn').addEventListener('click', function () { refreshFromCloud(false); });
@@ -1331,6 +1409,7 @@
   renderCart();
   applyMode();
   refreshFromCloud(true);
+  loadListeFiyat();
 })();
 </script>
 </body>
